@@ -439,6 +439,12 @@ type RealtimeSubscribeRequestEvent struct {
 // -------------------------------------------------------------------
 // Record CRUD API events data
 // -------------------------------------------------------------------
+type RecordsListQueryBuildEvent struct {
+	hook.Event
+	*RequestEvent
+	baseCollectionEventData
+	SearchProvider *search.Provider
+}
 
 type RecordsListRequestEvent struct {
 	hook.Event

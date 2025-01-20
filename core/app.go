@@ -1400,6 +1400,8 @@ type App interface {
 	// Record CRUD API event hooks
 	// ---------------------------------------------------------------
 
+	OnRecordsListQueryBuild(tags ...string) *hook.TaggedHook[*RecordsListQueryBuildEvent]
+	
 	// OnRecordsListRequest hook is triggered on each API Records list request.
 	//
 	// Could be used to validate or modify the response before returning it to the client.

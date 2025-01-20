@@ -170,11 +170,12 @@ type BaseApp struct {
 	onRecordAuthWithOTPRequest          *hook.Hook[*RecordAuthWithOTPRequestEvent]
 
 	// record crud API event hooks
-	onRecordsListRequest  *hook.Hook[*RecordsListRequestEvent]
-	onRecordViewRequest   *hook.Hook[*RecordRequestEvent]
-	onRecordCreateRequest *hook.Hook[*RecordRequestEvent]
-	onRecordUpdateRequest *hook.Hook[*RecordRequestEvent]
-	onRecordDeleteRequest *hook.Hook[*RecordRequestEvent]
+	onRecordsListQueryBuild *hook.Hook[*RecordsListQueryBuildEvent]
+	onRecordsListRequest     *hook.Hook[*RecordsListRequestEvent]
+	onRecordViewRequest      *hook.Hook[*RecordRequestEvent]
+	onRecordCreateRequest    *hook.Hook[*RecordRequestEvent]
+	onRecordUpdateRequest    *hook.Hook[*RecordRequestEvent]
+	onRecordDeleteRequest    *hook.Hook[*RecordRequestEvent]
 
 	// collection API event hooks
 	onCollectionsListRequest   *hook.Hook[*CollectionsListRequestEvent]
@@ -318,6 +319,7 @@ func (app *BaseApp) initHooks() {
 	app.onRecordAuthWithOTPRequest = &hook.Hook[*RecordAuthWithOTPRequestEvent]{}
 
 	// record crud API event hooks
+	app.onRecordsListQueryBuild = &hook.Hook[*RecordsListQueryBuildEvent]{}
 	app.onRecordsListRequest = &hook.Hook[*RecordsListRequestEvent]{}
 	app.onRecordViewRequest = &hook.Hook[*RecordRequestEvent]{}
 	app.onRecordCreateRequest = &hook.Hook[*RecordRequestEvent]{}
@@ -1046,6 +1048,9 @@ func (app *BaseApp) OnRecordAuthWithOTPRequest(tags ...string) *hook.TaggedHook[
 // -------------------------------------------------------------------
 // Record CRUD API event hooks
 // -------------------------------------------------------------------
+func (app *BaseApp) OnRecordsListQueryBuild(tags ...string) *hook.TaggedHook[*RecordsListQueryBuildEvent] {
+	return hook.NewTaggedHook(app.onRecordsListQueryBuild, tags...)
+}
 
 func (app *BaseApp) OnRecordsListRequest(tags ...string) *hook.TaggedHook[*RecordsListRequestEvent] {
 	return hook.NewTaggedHook(app.onRecordsListRequest, tags...)

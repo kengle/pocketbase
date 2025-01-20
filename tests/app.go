@@ -708,6 +708,14 @@ func NewTestAppWithConfig(config core.BaseAppConfig) (*TestApp, error) {
 		Priority: -99999,
 	})
 
+	t.OnRecordsListQueryBuild().Bind(&hook.Handler[*core.RecordsListQueryBuildEvent]{
+		Func: func(e *core.RecordsListQueryBuildEvent) error {
+			t.registerEventCall("OnRecordsListQueryBuild")
+			return e.Next()
+		},
+		Priority: -99999,
+	})
+
 	t.OnRecordsListRequest().Bind(&hook.Handler[*core.RecordsListRequestEvent]{
 		Func: func(e *core.RecordsListRequestEvent) error {
 			t.registerEventCall("OnRecordsListRequest")
