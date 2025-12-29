@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/pocketbase/dbx"
+	"github.com/pocketbase/pocketbase/tools/dbutils"
 	"github.com/pocketbase/pocketbase/tools/inflector"
 	"github.com/pocketbase/pocketbase/tools/list"
 	"github.com/pocketbase/pocketbase/tools/search"
@@ -34,7 +35,7 @@ func (app *BaseApp) RecordQuery(collectionModelOrIdentifier any) *dbx.SelectQuer
 		tableName = "@@__invalidCollectionModelOrIdentifier"
 	}
 
-	query := app.DB().Select(app.DB().QuoteSimpleColumnName(tableName) + ".*").From(tableName)
+	query := app.ConcurrentDB().Select(app.ConcurrentDB().QuoteSimpleColumnName(tableName) + ".*").From(tableName)
 
 	// in case of an error attach a new context and cancel it immediately with the error
 	if collectionErr != nil {
@@ -396,7 +397,10 @@ func (app *BaseApp) FindRecordsByFilter(
 		}
 	}
 
-	resolver.UpdateQuery(q) // attaches any adhoc joins and aliases
+	err = resolver.UpdateQuery(q) // attaches any adhoc joins and aliases
+	if err != nil {
+		return nil, err
+	}
 	// ---
 
 	if offset > 0 {
@@ -527,20 +531,34 @@ func (app *BaseApp) FindAuthRecordByToken(token string, validTypes ...string) (*
 
 // FindAuthRecordByEmail finds the auth record associated with the provided email.
 //
+// The email check would be case-insensitive if the related collection
+// email unique index has COLLATE NOCASE specified for the email column.
+//
 // Returns an error if it is not an auth collection or the record is not found.
 func (app *BaseApp) FindAuthRecordByEmail(collectionModelOrIdentifier any, email string) (*Record, error) {
 	collection, err := getCollectionByModelOrIdentifier(app, collectionModelOrIdentifier)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch auth collection: %w", err)
 	}
+
 	if !collection.IsAuth() {
 		return nil, fmt.Errorf("%q is not an auth collection", collection.Name)
 	}
 
 	record := &Record{}
 
+	var expr dbx.Expression
+
+	index, ok := dbutils.FindSingleColumnUniqueIndex(collection.Indexes, FieldNameEmail)
+	if ok && strings.EqualFold(index.Columns[0].Collate, "nocase") {
+		// case-insensitive search
+		expr = dbx.NewExp("[["+FieldNameEmail+"]] = {:email} COLLATE NOCASE", dbx.Params{"email": email})
+	} else {
+		expr = dbx.HashExp{FieldNameEmail: email}
+	}
+
 	err = app.RecordQuery(collection).
-		AndWhere(dbx.HashExp{FieldNameEmail: email}).
+		AndWhere(expr).
 		Limit(1).
 		One(record)
 	if err != nil {
@@ -584,7 +602,7 @@ func (app *BaseApp) CanAccessRecord(record *Record, requestInfo *RequestInfo, ac
 		return true, nil
 	}
 
-	var exists bool
+	var exists int
 
 	query := app.RecordQuery(record.Collection()).
 		Select("(1)").
@@ -596,12 +614,16 @@ func (app *BaseApp) CanAccessRecord(record *Record, requestInfo *RequestInfo, ac
 	if err != nil {
 		return false, err
 	}
-	resolver.UpdateQuery(query)
+
+	err = resolver.UpdateQuery(query)
+	if err != nil {
+		return false, err
+	}
 
 	err = query.AndWhere(expr).Limit(1).Row(&exists)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return false, err
 	}
 
-	return exists, nil
+	return exists > 0, nil
 }

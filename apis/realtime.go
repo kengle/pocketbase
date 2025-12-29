@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -83,11 +84,10 @@ func realtimeConnect(e *core.RequestEvent) error {
 			Data: []byte(`{"clientId":"` + ce.Client.Id() + `"}`),
 		}
 		connectMsgErr := ce.App.OnRealtimeMessageSend().Trigger(connectMsgEvent, func(me *core.RealtimeMessageEvent) error {
-			me.Response.Write([]byte("id:" + me.Client.Id() + "\n"))
-			me.Response.Write([]byte("event:" + me.Message.Name + "\n"))
-			me.Response.Write([]byte("data:"))
-			me.Response.Write(me.Message.Data)
-			me.Response.Write([]byte("\n\n"))
+			err := me.Message.WriteSSE(me.Response, me.Client.Id())
+			if err != nil {
+				return err
+			}
 			return me.Flush()
 		})
 		if connectMsgErr != nil {
@@ -122,11 +122,10 @@ func realtimeConnect(e *core.RequestEvent) error {
 				msgEvent.Client = ce.Client
 				msgEvent.Message = &msg
 				msgErr := ce.App.OnRealtimeMessageSend().Trigger(msgEvent, func(me *core.RealtimeMessageEvent) error {
-					me.Response.Write([]byte("id:" + me.Client.Id() + "\n"))
-					me.Response.Write([]byte("event:" + me.Message.Name + "\n"))
-					me.Response.Write([]byte("data:"))
-					me.Response.Write(me.Message.Data)
-					me.Response.Write([]byte("\n\n"))
+					err := me.Message.WriteSSE(me.Response, me.Client.Id())
+					if err != nil {
+						return err
+					}
 					return me.Flush()
 				})
 				if msgErr != nil {
@@ -214,7 +213,9 @@ func realtimeSetSubscriptions(e *core.RequestEvent) error {
 			slog.Any("subscriptions", e.Subscriptions),
 		)
 
-		return e.NoContent(http.StatusNoContent)
+		return execAfterSuccessTx(true, e.App, func() error {
+			return e.NoContent(http.StatusNoContent)
+		})
 	})
 }
 
@@ -353,7 +354,10 @@ func bindRealtimeEvents(app core.App) {
 		Func: func(e *core.ModelEvent) error {
 			record := realtimeResolveRecord(e.App, e.Model, "")
 			if record != nil {
-				err := realtimeBroadcastRecord(e.App, "delete", record, true)
+				// note: use the outside scoped app instance for the access checks so that the API rules
+				// are performed out of the delete transaction ensuring that they would still work even if
+				// a cascade-deleted record's API rule relies on an already deleted parent record
+				err := realtimeBroadcastRecord(e.App, "delete", record, true, app)
 				if err != nil {
 					app.Logger().Debug(
 						"Failed to dry cache record delete",
@@ -372,14 +376,17 @@ func bindRealtimeEvents(app core.App) {
 	// delete: broadcast
 	app.OnModelAfterDeleteSuccess().Bind(&hook.Handler[*core.ModelEvent]{
 		Func: func(e *core.ModelEvent) error {
-			record := realtimeResolveRecord(e.App, e.Model, "")
-			if record != nil {
-				err := realtimeBroadcastDryCachedRecord(e.App, "delete", record)
+			// note: only ensure that it is a collection record
+			// and don't use realtimeResolveRecord because in case of a
+			// custom model it'll fail to resolve since the record is already deleted
+			collection := realtimeResolveRecordCollection(e.App, e.Model)
+			if collection != nil {
+				err := realtimeBroadcastDryCacheKey(e.App, getDryCacheKey("delete", e.Model))
 				if err != nil {
 					app.Logger().Debug(
 						"Failed to broadcast record delete",
-						slog.String("id", record.Id),
-						slog.String("collectionName", record.Collection().Name),
+						slog.Any("id", e.Model.PK()),
+						slog.String("collectionName", collection.Name),
 						slog.String("error", err.Error()),
 					)
 				}
@@ -395,7 +402,7 @@ func bindRealtimeEvents(app core.App) {
 		Func: func(e *core.ModelErrorEvent) error {
 			record := realtimeResolveRecord(e.App, e.Model, "")
 			if record != nil {
-				err := realtimeUnsetDryCachedRecord(e.App, "delete", record)
+				err := realtimeUnsetDryCacheKey(e.App, getDryCacheKey("delete", record))
 				if err != nil {
 					app.Logger().Debug(
 						"Failed to cleanup after broadcast record delete failure",
@@ -415,7 +422,14 @@ func bindRealtimeEvents(app core.App) {
 // resolveRecord converts *if possible* the provided model interface to a Record.
 // This is usually helpful if the provided model is a custom Record model struct.
 func realtimeResolveRecord(app core.App, model core.Model, optCollectionType string) *core.Record {
-	record, _ := model.(*core.Record)
+	var record *core.Record
+	switch m := model.(type) {
+	case *core.Record:
+		record = m
+	case core.RecordProxy:
+		record = m.ProxyRecord()
+	}
+
 	if record != nil {
 		if optCollectionType == "" || record.Collection().Type == optCollectionType {
 			return record
@@ -444,14 +458,20 @@ func realtimeResolveRecord(app core.App, model core.Model, optCollectionType str
 // realtimeResolveRecordCollection extracts *if possible* the Collection model from the provided model interface.
 // This is usually helpful if the provided model is a custom Record model struct.
 func realtimeResolveRecordCollection(app core.App, model core.Model) (collection *core.Collection) {
-	if record, ok := model.(*core.Record); ok {
-		collection = record.Collection()
-	} else {
-		// check if it is custom Record model struct (ignore "private" tables)
-		collection, _ = app.FindCachedCollectionByNameOrId(model.TableName())
+	switch m := model.(type) {
+	case *core.Record:
+		return m.Collection()
+	case core.RecordProxy:
+		return m.ProxyRecord().Collection()
+	default:
+		// check if it is custom Record model struct
+		collection, err := app.FindCachedCollectionByNameOrId(model.TableName())
+		if err == nil {
+			return collection
+		}
 	}
 
-	return collection
+	return nil
 }
 
 // recordData represents the broadcasted record subscrition message data.
@@ -460,7 +480,11 @@ type recordData struct {
 	Action string `json:"action"`
 }
 
-func realtimeBroadcastRecord(app core.App, action string, record *core.Record, dryCache bool) error {
+// Note: the optAccessCheckApp is there in case you want the access check
+// to be performed against different db app context (e.g. out of a transaction).
+// If set, it is expected that optAccessCheckApp instance is used for read-only operations to avoid deadlocks.
+// If not set, it fallbacks to app.
+func realtimeBroadcastRecord(app core.App, action string, record *core.Record, dryCache bool, optAccessCheckApp ...core.App) error {
 	collection := record.Collection()
 	if collection == nil {
 		return errors.New("[broadcastRecord] Record collection not set")
@@ -482,9 +506,14 @@ func realtimeBroadcastRecord(app core.App, action string, record *core.Record, d
 		(collection.Id + "?"):   collection.ListRule,
 	}
 
-	dryCacheKey := action + "/" + record.Id
+	dryCacheKey := getDryCacheKey(action, record)
 
 	group := new(errgroup.Group)
+
+	accessCheckApp := app
+	if len(optAccessCheckApp) > 0 {
+		accessCheckApp = optAccessCheckApp[0]
+	}
 
 	for _, chunk := range chunks {
 		group.Go(func() error {
@@ -502,10 +531,6 @@ func realtimeBroadcastRecord(app core.App, action string, record *core.Record, d
 					clientAuth, _ = client.Get(RealtimeClientAuthKey).(*core.Record)
 
 					for sub, options := range subs {
-						// create a clean record copy without expand and unknown fields
-						// because we don't know yet which exact fields the client subscription has permissions to access
-						cleanRecord := record.Fresh()
-
 						// mock request data
 						requestInfo := &core.RequestInfo{
 							Context: core.RequestInfoContextRealtime,
@@ -515,9 +540,13 @@ func realtimeBroadcastRecord(app core.App, action string, record *core.Record, d
 							Auth:    clientAuth,
 						}
 
-						if !realtimeCanAccessRecord(app, cleanRecord, requestInfo, rule) {
+						if !realtimeCanAccessRecord(accessCheckApp, record, requestInfo, rule) {
 							continue
 						}
+
+						// create a clean record copy without expand and unknown fields because we don't know yet
+						// which exact fields the client subscription requested or has permissions to access
+						cleanRecord := record.Fresh()
 
 						// trigger the enrich hooks
 						enrichErr := triggerRecordEnrichHooks(app, requestInfo, []*core.Record{cleanRecord}, func() error {
@@ -541,7 +570,7 @@ func realtimeBroadcastRecord(app core.App, action string, record *core.Record, d
 							// for auth owner, superuser or manager
 							if collection.IsAuth() {
 								if isSameAuth(clientAuth, cleanRecord) ||
-									realtimeCanAccessRecord(app, cleanRecord, requestInfo, collection.ManageRule) {
+									realtimeCanAccessRecord(accessCheckApp, cleanRecord, requestInfo, collection.ManageRule) {
 									cleanRecord.IgnoreEmailVisibility(true)
 								}
 							}
@@ -622,14 +651,12 @@ func realtimeBroadcastRecord(app core.App, action string, record *core.Record, d
 	return group.Wait()
 }
 
-// realtimeBroadcastDryCachedRecord broadcasts all cached record related messages.
-func realtimeBroadcastDryCachedRecord(app core.App, action string, record *core.Record) error {
+// realtimeBroadcastDryCacheKey broadcasts the dry cached key related messages.
+func realtimeBroadcastDryCacheKey(app core.App, key string) error {
 	chunks := app.SubscriptionsBroker().ChunkedClients(clientsChunkSize)
 	if len(chunks) == 0 {
 		return nil // no subscribers
 	}
-
-	key := action + "/" + record.Id
 
 	group := new(errgroup.Group)
 
@@ -659,14 +686,12 @@ func realtimeBroadcastDryCachedRecord(app core.App, action string, record *core.
 	return group.Wait()
 }
 
-// realtimeUnsetDryCachedRecord removes the dry cached record related messages.
-func realtimeUnsetDryCachedRecord(app core.App, action string, record *core.Record) error {
+// realtimeUnsetDryCacheKey removes the dry cached key related messages.
+func realtimeUnsetDryCacheKey(app core.App, key string) error {
 	chunks := app.SubscriptionsBroker().ChunkedClients(clientsChunkSize)
 	if len(chunks) == 0 {
 		return nil // no subscribers
 	}
-
-	key := action + "/" + record.Id
 
 	group := new(errgroup.Group)
 
@@ -683,6 +708,15 @@ func realtimeUnsetDryCachedRecord(app core.App, action string, record *core.Reco
 	}
 
 	return group.Wait()
+}
+
+func getDryCacheKey(action string, model core.Model) string {
+	pkStr, ok := model.PK().(string)
+	if !ok {
+		pkStr = fmt.Sprintf("%v", model.PK())
+	}
+
+	return action + "/" + model.TableName() + "/" + pkStr
 }
 
 func isSameAuth(authA, authB *core.Record) bool {
@@ -722,9 +756,9 @@ func realtimeCanAccessRecord(
 		return false
 	}
 
-	var exists bool
+	var exists int
 
-	q := app.DB().Select("(1)").
+	q := app.ConcurrentDB().Select("(1)").
 		From(record.Collection().Name).
 		AndWhere(dbx.HashExp{record.Collection().Name + ".id": record.Id})
 
@@ -735,9 +769,13 @@ func realtimeCanAccessRecord(
 	}
 
 	q.AndWhere(expr)
-	resolver.UpdateQuery(q)
+
+	err = resolver.UpdateQuery(q)
+	if err != nil {
+		return false
+	}
 
 	err = q.Limit(1).Row(&exists)
 
-	return err == nil && exists
+	return err == nil && exists > 0
 }

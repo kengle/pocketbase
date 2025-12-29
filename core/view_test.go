@@ -249,8 +249,8 @@ func TestCreateViewFields(t *testing.T) {
 				demo1.id,
 				demo1.text,
 				/* multi
-					line comment */
-				demo1.url, demo1.created, demo2.updated from demo1
+				 * line comment block */
+				demo1.url, demo1.created, demo1.updated from/* inline comment block with no spaces between the identifiers */demo1
 				-- comment before join
 				join demo2 ON (
 					-- comment inside join
@@ -392,6 +392,38 @@ func TestCreateViewFields(t *testing.T) {
 				"avg": core.FieldTypeJSON,
 				"min": core.FieldTypeJSON,
 				"max": core.FieldTypeJSON,
+			},
+		},
+		{
+			"query with multiline cast",
+			`select
+				id,
+				cast(
+					(
+						case
+							when count(a.id) = 1 then 21
+							when count(a.id) = 2 then 18
+							else 0
+						end
+					) as int
+				) as cast_int
+			from demo1 a`,
+			false,
+			map[string]string{
+				"id":       core.FieldTypeText,
+				"cast_int": core.FieldTypeNumber,
+			},
+		},
+		{
+			"query with case-insensitive and extra-spaced cast",
+			`select
+				id,
+				CaSt( a.id  aS iNt ) as cast_int
+			from demo1 a`,
+			false,
+			map[string]string{
+				"id":       core.FieldTypeText,
+				"cast_int": core.FieldTypeNumber,
 			},
 		},
 		{

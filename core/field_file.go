@@ -5,11 +5,11 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"log"
 	"regexp"
 	"strings"
 
 	validation "github.com/go-ozzo/ozzo-validation/v4"
-	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core/validators"
 	"github.com/pocketbase/pocketbase/tools/filesystem"
 	"github.com/pocketbase/pocketbase/tools/list"
@@ -356,8 +356,7 @@ func (f *FileField) Intercept(
 		return nil
 	case InterceptorActionAfterCreateError, InterceptorActionAfterUpdateError:
 		// when in transaction we assume that the error was handled by afterRecordExecuteFailure
-		_, insideTransaction := app.DB().(*dbx.Tx)
-		if insideTransaction {
+		if app.IsTransactional() {
 			return actionFunc()
 		}
 
@@ -637,7 +636,13 @@ func (f *FileField) FindGetter(key string) GetterFunc {
 		return func(record *Record) any {
 			return record.GetRaw(f.Name)
 		}
+	case f.Name + ":unsaved":
+		return func(record *Record) any {
+			return f.extractUploadableFiles(f.toSliceValue(record.GetRaw(f.Name)))
+		}
 	case f.Name + ":uploaded":
+		// deprecated
+		log.Println("[file field getter] please replace :uploaded with :unsaved")
 		return func(record *Record) any {
 			return f.extractUploadableFiles(f.toSliceValue(record.GetRaw(f.Name)))
 		}

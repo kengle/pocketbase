@@ -1,4 +1,5 @@
 import AppleOptions from "@/components/collections/providers/AppleOptions.svelte";
+import LarkOptions from "@/components/collections/providers/LarkOptions.svelte";
 import MicrosoftOptions from "@/components/collections/providers/MicrosoftOptions.svelte";
 import OIDCOptions from "@/components/collections/providers/OIDCOptions.svelte";
 import SelfHostedOptions from "@/components/collections/providers/SelfHostedOptions.svelte";
@@ -79,18 +80,13 @@ export default [
         optionsComponentProps: { title: "Self-hosted endpoints (optional)" },
     },
     {
-        key: "linear",
-        title: "Linear",
-        logo: "linear.svg",
-    },
-    {
         key: "discord",
         title: "Discord",
         logo: "discord.svg",
     },
     {
         key: "twitter",
-        title: "Twitter",
+        title: "X/Twitter",
         logo: "twitter.svg",
     },
     {
@@ -104,6 +100,11 @@ export default [
         logo: "vk.svg"
     },
     {
+        key: "linear",
+        title: "Linear",
+        logo: "linear.svg",
+    },
+    {
         key:   "notion",
         title: "Notion",
         logo:  "notion.svg",
@@ -114,9 +115,25 @@ export default [
         logo:  "monday.svg",
     },
     {
+        key: "lark",
+        title: "Lark",
+        logo: "lark.svg",
+        optionsComponent: LarkOptions,
+    },
+    {
+        key:   "box",
+        title: "Box",
+        logo:  "box.svg",
+    },
+    {
         key: "spotify",
         title: "Spotify",
         logo: "spotify.svg",
+    },
+    {
+        key: "trakt",
+        title: "Trakt",
+        logo: "trakt.svg",
     },
     {
         key: "twitch",

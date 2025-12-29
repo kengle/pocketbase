@@ -27,6 +27,8 @@
                         avatarURL: "https://example.com/avatar.png",
                         accessToken: "...",
                         refreshToken: "...",
+                        expiry: "2022-01-01 10:00:00.123Z",
+                        isNew: false,
                         rawUser: {},
                     },
                 },
@@ -38,7 +40,7 @@
             code: 400,
             body: `
                 {
-                  "code": 400,
+                  "status": 400,
                   "message": "An error occurred while submitting the form.",
                   "data": {
                     "provider": {

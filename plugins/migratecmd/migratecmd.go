@@ -23,9 +23,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/AlecAivazis/survey/v2"
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/tools/inflector"
+	"github.com/pocketbase/pocketbase/tools/osutils"
 	"github.com/spf13/cobra"
 )
 
@@ -145,7 +145,7 @@ func (p *plugin) createCommand() *cobra.Command {
 
 func (p *plugin) migrateCreateHandler(template string, args []string, interactive bool) (string, error) {
 	if len(args) < 1 {
-		return "", errors.New("Missing migration file name")
+		return "", errors.New("missing migration file name")
 	}
 
 	name := args[0]
@@ -156,11 +156,7 @@ func (p *plugin) migrateCreateHandler(template string, args []string, interactiv
 	resultFilePath := path.Join(dir, filename)
 
 	if interactive {
-		confirm := false
-		prompt := &survey.Confirm{
-			Message: fmt.Sprintf("Do you really want to create migration %q?", resultFilePath),
-		}
-		survey.AskOne(prompt, &confirm)
+		confirm := osutils.YesNoPrompt(fmt.Sprintf("Do you really want to create migration %q?", resultFilePath), false)
 		if !confirm {
 			fmt.Println("The command has been cancelled")
 			return "", nil
@@ -176,7 +172,7 @@ func (p *plugin) migrateCreateHandler(template string, args []string, interactiv
 			template, templateErr = p.goBlankTemplate()
 		}
 		if templateErr != nil {
-			return "", fmt.Errorf("Failed to resolve create template: %v\n", templateErr)
+			return "", fmt.Errorf("failed to resolve create template: %v", templateErr)
 		}
 	}
 
@@ -187,7 +183,7 @@ func (p *plugin) migrateCreateHandler(template string, args []string, interactiv
 
 	// save the migration file
 	if err := os.WriteFile(resultFilePath, []byte(template), 0644); err != nil {
-		return "", fmt.Errorf("Failed to save migration file %q: %v\n", resultFilePath, err)
+		return "", fmt.Errorf("failed to save migration file %q: %v", resultFilePath, err)
 	}
 
 	if interactive {
@@ -203,7 +199,7 @@ func (p *plugin) migrateCollectionsHandler(args []string, interactive bool) (str
 
 	collections := []*core.Collection{}
 	if err := p.app.CollectionQuery().OrderBy("created ASC").All(&collections); err != nil {
-		return "", fmt.Errorf("Failed to fetch migrations list: %v\n", err)
+		return "", fmt.Errorf("failed to fetch migrations list: %v", err)
 	}
 
 	var template string
@@ -214,7 +210,7 @@ func (p *plugin) migrateCollectionsHandler(args []string, interactive bool) (str
 		template, templateErr = p.goSnapshotTemplate(collections)
 	}
 	if templateErr != nil {
-		return "", fmt.Errorf("Failed to resolve template: %v\n", templateErr)
+		return "", fmt.Errorf("failed to resolve template: %v", templateErr)
 	}
 
 	return p.migrateCreateHandler(template, createArgs, interactive)

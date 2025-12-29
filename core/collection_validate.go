@@ -34,7 +34,11 @@ func onCollectionValidate(e *CollectionEvent) error {
 		original,
 	)
 
-	return validator.run()
+	if err := validator.run(); err != nil {
+		return err
+	}
+
+	return e.Next()
 }
 
 func newCollectionValidator(ctx context.Context, app App, new, original *Collection) *collectionValidator {
@@ -83,7 +87,7 @@ func (validator *collectionValidator) run() error {
 				validator.original.IsNew(),
 				validation.Length(1, 100),
 				validation.Match(DefaultIdRegex),
-				validation.By(validators.UniqueId(validator.app.DB(), validator.new.TableName())),
+				validation.By(validators.UniqueId(validator.app.ConcurrentDB(), validator.new.TableName())),
 			).Else(
 				validation.By(validators.Equal(validator.original.Id)),
 			),
@@ -456,7 +460,7 @@ func (cv *collectionValidator) checkFieldsForUniqueIndex(value any) error {
 				SetParams(map[string]any{"fieldName": name})
 		}
 
-		if !dbutils.HasSingleColumnUniqueIndex(name, cv.new.Indexes) {
+		if _, ok := dbutils.FindSingleColumnUniqueIndex(cv.new.Indexes, name); !ok {
 			return validation.NewError("validation_missing_unique_constraint", "The field {{.fieldName}} doesn't have a UNIQUE constraint.").
 				SetParams(map[string]any{"fieldName": name})
 		}
@@ -485,7 +489,7 @@ func (validator *collectionValidator) checkRule(value any) error {
 		return nil // nothing to check
 	}
 
-	r := NewRecordFieldResolver(validator.app, validator.new, nil, true)
+	r := NewRecordFieldResolver(validator.app, validator.new, &RequestInfo{}, true)
 	_, err := search.FilterData(vStr).BuildExpr(r)
 	if err != nil {
 		return validation.NewError("validation_invalid_rule", "Invalid rule. Raw error: "+err.Error())
@@ -554,7 +558,7 @@ func (cv *collectionValidator) checkIndexes(value any) error {
 
 		// ensure that the index name is not used in another collection
 		var usedTblName string
-		_ = cv.app.DB().Select("tbl_name").
+		_ = cv.app.ConcurrentDB().Select("tbl_name").
 			From("sqlite_master").
 			AndWhere(dbx.HashExp{"type": "index"}).
 			AndWhere(dbx.NewExp("LOWER([[tbl_name]])!=LOWER({:oldName})", dbx.Params{"oldName": cv.original.Name})).
@@ -666,7 +670,7 @@ func (cv *collectionValidator) checkIndexes(value any) error {
 	if cv.new.IsAuth() {
 		requiredNames := []string{FieldNameTokenKey, FieldNameEmail}
 		for _, name := range requiredNames {
-			if !dbutils.HasSingleColumnUniqueIndex(name, indexes) {
+			if _, ok := dbutils.FindSingleColumnUniqueIndex(indexes, name); !ok {
 				return validation.NewError(
 					"validation_missing_required_unique_index",
 					`Missing required unique index for field "{{.fieldName}}".`,

@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/apis"
@@ -14,6 +13,7 @@ import (
 	"github.com/pocketbase/pocketbase/plugins/jsvm"
 	"github.com/pocketbase/pocketbase/plugins/migratecmd"
 	"github.com/pocketbase/pocketbase/tools/hook"
+	"github.com/pocketbase/pocketbase/tools/osutils"
 )
 
 func main() {
@@ -36,7 +36,7 @@ func main() {
 		&hooksWatch,
 		"hooksWatch",
 		true,
-		"auto restart the app on pb_hooks file change",
+		"auto restart the app on pb_hooks file change; it has no effect on Windows",
 	)
 
 	var hooksPool int
@@ -76,7 +76,7 @@ func main() {
 		&indexFallback,
 		"indexFallback",
 		true,
-		"fallback the request to index.html on missing static path (eg. when pretty urls are used with SPA)",
+		"fallback the request to index.html on missing static path, e.g. when pretty urls are used with SPA",
 	)
 
 	app.RootCmd.ParseFlags(os.Args[1:])
@@ -123,8 +123,7 @@ func main() {
 
 // the default pb_public dir location is relative to the executable
 func defaultPublicDir() string {
-	if strings.HasPrefix(os.Args[0], os.TempDir()) {
-		// most likely ran with go run
+	if osutils.IsProbablyGoRun() {
 		return "./pb_public"
 	}
 

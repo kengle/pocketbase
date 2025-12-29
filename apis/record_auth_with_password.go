@@ -3,10 +3,14 @@ package apis
 import (
 	"database/sql"
 	"errors"
+	"slices"
+	"strings"
 
 	validation "github.com/go-ozzo/ozzo-validation/v4"
 	"github.com/go-ozzo/ozzo-validation/v4/is"
+	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase/core"
+	"github.com/pocketbase/pocketbase/tools/dbutils"
 	"github.com/pocketbase/pocketbase/tools/list"
 )
 
@@ -28,29 +32,40 @@ func recordAuthWithPassword(e *core.RequestEvent) error {
 		return firstApiError(err, e.BadRequestError("An error occurred while validating the submitted data.", err))
 	}
 
+	e.Set(core.RequestEventKeyInfoContext, core.RequestInfoContextPasswordAuth)
+
 	var foundRecord *core.Record
 	var foundErr error
 
 	if form.IdentityField != "" {
-		foundRecord, foundErr = e.App.FindFirstRecordByData(collection.Id, form.IdentityField, form.Identity)
+		foundRecord, foundErr = findRecordByIdentityField(e.App, collection, form.IdentityField, form.Identity)
 	} else {
-		// prioritize email lookup
-		isEmail := is.EmailFormat.Validate(form.Identity) == nil
-		if isEmail && list.ExistInSlice(core.FieldNameEmail, collection.PasswordAuth.IdentityFields) {
-			foundRecord, foundErr = e.App.FindAuthRecordByEmail(collection.Id, form.Identity)
+		identityFields := collection.PasswordAuth.IdentityFields
+
+		// @todo consider removing with the stable release or moving it in the collection save
+		//
+		// prioritize email lookup to minimize breaking changes with earlier versions
+		if len(identityFields) > 1 && identityFields[0] != core.FieldNameEmail {
+			identityFields = slices.Clone(identityFields)
+			slices.SortStableFunc(identityFields, func(a, b string) int {
+				if a == "email" {
+					return -1
+				}
+				if b == "email" {
+					return 1
+				}
+				return 0
+			})
 		}
 
-		// search by the other identity fields
-		if !isEmail || foundErr != nil {
-			for _, name := range collection.PasswordAuth.IdentityFields {
-				if !isEmail && name == core.FieldNameEmail {
-					continue // no need to search by the email field if it is not an email
-				}
+		for _, name := range identityFields {
+			if name == core.FieldNameEmail && is.EmailFormat.Validate(form.Identity) != nil {
+				continue // no need to query the database if we know that the submitted value is not an email
+			}
 
-				foundRecord, foundErr = e.App.FindFirstRecordByData(collection.Id, name, form.Identity)
-				if foundErr == nil {
-					break
-				}
+			foundRecord, foundErr = findRecordByIdentityField(e.App, collection, name, form.Identity)
+			if foundErr == nil {
+				break
 			}
 		}
 	}
@@ -92,6 +107,38 @@ func (form *authWithPasswordForm) validate(collection *core.Collection) error {
 	return validation.ValidateStruct(form,
 		validation.Field(&form.Identity, validation.Required, validation.Length(1, 255)),
 		validation.Field(&form.Password, validation.Required, validation.Length(1, 255)),
-		validation.Field(&form.IdentityField, validation.In(list.ToInterfaceSlice(collection.PasswordAuth.IdentityFields)...)),
+		validation.Field(
+			&form.IdentityField,
+			validation.Length(1, 255),
+			validation.In(list.ToInterfaceSlice(collection.PasswordAuth.IdentityFields)...),
+		),
 	)
+}
+
+func findRecordByIdentityField(app core.App, collection *core.Collection, field string, value any) (*core.Record, error) {
+	if !slices.Contains(collection.PasswordAuth.IdentityFields, field) {
+		return nil, errors.New("invalid identity field " + field)
+	}
+
+	index, ok := dbutils.FindSingleColumnUniqueIndex(collection.Indexes, field)
+	if !ok {
+		return nil, errors.New("missing " + field + " unique index constraint")
+	}
+
+	var expr dbx.Expression
+	if strings.EqualFold(index.Columns[0].Collate, "nocase") {
+		// case-insensitive search
+		expr = dbx.NewExp("[["+field+"]] = {:identity} COLLATE NOCASE", dbx.Params{"identity": value})
+	} else {
+		expr = dbx.HashExp{field: value}
+	}
+
+	record := &core.Record{}
+
+	err := app.RecordQuery(collection).AndWhere(expr).Limit(1).One(record)
+	if err != nil {
+		return nil, err
+	}
+
+	return record, nil
 }

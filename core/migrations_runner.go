@@ -5,9 +5,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/AlecAivazis/survey/v2"
 	"github.com/fatih/color"
 	"github.com/pocketbase/dbx"
+	"github.com/pocketbase/pocketbase/tools/osutils"
 	"github.com/spf13/cast"
 )
 
@@ -80,15 +80,11 @@ func (r *MigrationsRunner) Run(args ...string) error {
 			return err
 		}
 
-		confirm := false
-		prompt := &survey.Confirm{
-			Message: fmt.Sprintf(
-				"\n%v\nDo you really want to revert the last %d applied migration(s)?",
-				strings.Join(names, "\n"),
-				toRevertCount,
-			),
-		}
-		survey.AskOne(prompt, &confirm)
+		confirm := osutils.YesNoPrompt(fmt.Sprintf(
+			"\n%v\nDo you really want to revert the last %d applied migration(s)?",
+			strings.Join(names, "\n"),
+			toRevertCount,
+		), false)
 		if !confirm {
 			fmt.Println("The command has been cancelled")
 			return nil
@@ -116,7 +112,7 @@ func (r *MigrationsRunner) Run(args ...string) error {
 		color.Green("The %s table was synced with the available migrations.", r.tableName)
 		return nil
 	default:
-		return fmt.Errorf("Unsupported command: %q\n", cmd)
+		return fmt.Errorf("unsupported command: %q", cmd)
 	}
 }
 
@@ -155,12 +151,12 @@ func (r *MigrationsRunner) Up() ([]string, error) {
 				// ignore empty Up action
 				if m.Up != nil {
 					if err := m.Up(txApp); err != nil {
-						return fmt.Errorf("Failed to apply migration %s: %w", m.File, err)
+						return fmt.Errorf("failed to apply migration %s: %w", m.File, err)
 					}
 				}
 
 				if err := r.saveAppliedMigration(txApp, m.File); err != nil {
-					return fmt.Errorf("Failed to save applied migration info for %s: %w", m.File, err)
+					return fmt.Errorf("failed to save applied migration info for %s: %w", m.File, err)
 				}
 
 				applied = append(applied, m.File)
@@ -208,12 +204,12 @@ func (r *MigrationsRunner) Down(toRevertCount int) ([]string, error) {
 					// ignore empty Down action
 					if m.Down != nil {
 						if err := m.Down(txApp); err != nil {
-							return fmt.Errorf("Failed to revert migration %s: %w", m.File, err)
+							return fmt.Errorf("failed to revert migration %s: %w", m.File, err)
 						}
 					}
 
 					if err := r.saveRevertedMigration(txApp, m.File); err != nil {
-						return fmt.Errorf("Failed to save reverted migration info for %s: %w", m.File, err)
+						return fmt.Errorf("failed to save reverted migration info for %s: %w", m.File, err)
 					}
 
 					reverted = append(reverted, m.File)
@@ -267,15 +263,15 @@ func (r *MigrationsRunner) initMigrationsTable() error {
 }
 
 func (r *MigrationsRunner) isMigrationApplied(txApp App, file string) bool {
-	var exists bool
+	var exists int
 
-	err := txApp.DB().Select("count(*)").
+	err := txApp.DB().Select("(1)").
 		From(r.tableName).
 		Where(dbx.HashExp{"file": file}).
 		Limit(1).
 		Row(&exists)
 
-	return err == nil && exists
+	return err == nil && exists > 0
 }
 
 func (r *MigrationsRunner) saveAppliedMigration(txApp App, file string) error {

@@ -9,7 +9,6 @@
 
     let responseTab = 200;
     let responses = [];
-    let baseData = {};
 
     $: isAuth = collection?.type === "auth";
 
@@ -33,7 +32,7 @@
             code: 400,
             body: `
                 {
-                  "code": 400,
+                  "status": 400,
                   "message": "Failed to update record.",
                   "data": {
                     "${collection?.fields?.[0]?.name}": {
@@ -48,7 +47,7 @@
             code: 403,
             body: `
                 {
-                  "code": 403,
+                  "status": 403,
                   "message": "You are not allowed to perform this request.",
                   "data": {}
                 }
@@ -58,7 +57,7 @@
             code: 404,
             body: `
                 {
-                  "code": 404,
+                  "status": 404,
                   "message": "The requested resource wasn't found.",
                   "data": {}
                 }
@@ -66,14 +65,18 @@
         },
     ];
 
-    $: if (isAuth) {
-        baseData = {
-            password: "87654321",
-            passwordConfirm: "87654321",
-            oldPassword: "12345678",
-        };
-    } else {
-        baseData = {};
+    function getPayload(collection) {
+        let payload = CommonHelper.dummyCollectionSchemaData(collection, true);
+
+        if (isAuth) {
+            payload.oldPassword = "12345678";
+            payload.password = "87654321";
+            payload.passwordConfirm = "87654321";
+            delete payload.verified;
+            delete payload.email;
+        }
+
+        return payload;
     }
 </script>
 
@@ -113,7 +116,7 @@ const pb = new PocketBase('${backendAbsUrl}');
 ...
 
 // example update data
-const data = ${JSON.stringify(Object.assign({}, baseData, CommonHelper.dummyCollectionSchemaData(collection, true)), null, 4)};
+const data = ${JSON.stringify(getPayload(collection), null, 4)};
 
 const record = await pb.collection('${collection?.name}').update('RECORD_ID', data);
     `}
@@ -125,7 +128,7 @@ final pb = PocketBase('${backendAbsUrl}');
 ...
 
 // example update body
-final body = <String, dynamic>${JSON.stringify(Object.assign({}, baseData, CommonHelper.dummyCollectionSchemaData(collection, true)), null, 2)};
+final body = <String, dynamic>${JSON.stringify(getPayload(collection), null, 2)};
 
 final record = await pb.collection('${collection?.name}').update('RECORD_ID', body: body);
     `}
@@ -300,6 +303,8 @@ final record = await pb.collection('${collection?.name}').update('RECORD_ID', bo
                         Email address.
                     {:else if field.type === "url"}
                         URL address.
+                    {:else if field.type === "geoPoint"}
+                        <code>{`{"lon":x,"lat":y}`}</code> object.
                     {:else if field.type === "file"}
                         File object.<br />
                         Set to <code>null</code> to delete already uploaded file(s).

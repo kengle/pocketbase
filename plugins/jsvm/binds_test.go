@@ -1,6 +1,7 @@
 package jsvm
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,7 @@ import (
 	"github.com/pocketbase/pocketbase/tools/filesystem"
 	"github.com/pocketbase/pocketbase/tools/mailer"
 	"github.com/pocketbase/pocketbase/tools/router"
+	"github.com/pocketbase/pocketbase/tools/types"
 	"github.com/spf13/cast"
 )
 
@@ -44,7 +46,7 @@ func TestBaseBindsCount(t *testing.T) {
 	vm := goja.New()
 	baseBinds(vm)
 
-	testBindsCount(vm, "this", 32, t)
+	testBindsCount(vm, "this", 41, t)
 }
 
 func TestBaseBindsSleep(t *testing.T) {
@@ -106,10 +108,49 @@ func TestBaseBindsToString(t *testing.T) {
 
 	_, err := vm.RunString(`
 		for (let s of scenarios) {
-			let result = toString(s.value)
+			let str = toString(s.value)
+			if (str != s.expected) {
+				throw new Error('[' + s.name + '] Expected string ' + s.expected + ', got ' + str);
+			}
+		}
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
 
-			if (result != s.expected) {
-				throw new Error('[' + s.name + '] Expected string ' + s.expected + ', got ' + result);
+func TestBaseBindsToBytes(t *testing.T) {
+	vm := goja.New()
+	baseBinds(vm)
+	vm.Set("bytesEqual", bytes.Equal)
+	vm.Set("scenarios", []struct {
+		Name     string
+		Value    any
+		Expected []byte
+	}{
+		{"null", nil, []byte{}},
+		{"string", "test", []byte("test")},
+		{"number", -12.4, []byte("-12.4")},
+		{"bool", true, []byte("true")},
+		{"arr", []int{1, 2, 3}, []byte{1, 2, 3}},
+		{"jsonraw", types.JSONRaw{1, 2, 3}, []byte{1, 2, 3}},
+		{"reader", strings.NewReader("test"), []byte("test")},
+		{"obj", map[string]any{"test": 123}, []byte(`{"test":123}`)},
+		{"struct", struct {
+			Name    string
+			private string
+		}{Name: "123", private: "456"}, []byte(`{"Name":"123"}`)},
+	})
+
+	_, err := vm.RunString(`
+		for (let s of scenarios) {
+			let b = toBytes(s.value)
+			if (!Array.isArray(b)) {
+				throw new Error('[' + s.name + '] Expected toBytes to return an array');
+			}
+
+			if (!bytesEqual(b, s.expected)) {
+				throw new Error('[' + s.name + '] Expected bytes ' + s.expected + ', got ' + b);
 			}
 		}
 	`)
@@ -399,6 +440,10 @@ func TestBaseBindsNamedFields(t *testing.T) {
 			"new FileField({name: 'test'})",
 			isType[*core.FileField],
 		},
+		{
+			"new GeoPointField({name: 'test'})",
+			isType[*core.GeoPointField],
+		},
 	}
 
 	for _, s := range scenarios {
@@ -538,20 +583,65 @@ func TestBaseBindsMiddleware(t *testing.T) {
 	}
 }
 
+func TestBaseBindsTimezone(t *testing.T) {
+	vm := goja.New()
+	baseBinds(vm)
+
+	_, err := vm.RunString(`
+		const v0 = (new Timezone()).string();
+		if (v0 != "UTC") {
+			throw new Error("(v0) Expected UTC got " + v0)
+		}
+
+		const v1 = (new Timezone("invalid")).string();
+		if (v1 != "UTC") {
+			throw new Error("(v1) Expected UTC got " + v1)
+		}
+
+		const v2 = (new Timezone("EET")).string();
+		if (v2 != "EET") {
+			throw new Error("(v2) Expected EET got " + v2)
+		}
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestBaseBindsDateTime(t *testing.T) {
 	vm := goja.New()
 	baseBinds(vm)
 
 	_, err := vm.RunString(`
-		const v0 = new DateTime();
-		if (v0.isZero()) {
-			throw new Error('Expected to fallback to now, got zero value');
+		const now = new DateTime();
+		if (now.isZero()) {
+			throw new Error('(now) Expected to fallback to now, got zero value');
 		}
 
-		const v1 = new DateTime('2023-01-01 00:00:00.000Z');
-		const expected = "2023-01-01 00:00:00.000Z"
-		if (v1.string() != expected) {
-			throw new Error('Expected ' + expected + ', got ', v1.string());
+		const nowPart = now.string().substring(0, 19)
+
+		const scenarios = [
+			// empty datetime string and no custom location
+			{date: new DateTime(''), expected: nowPart},
+			// empty datetime string and custom default location (should be ignored)
+			{date: new DateTime('', 'Asia/Tokyo'), expected: nowPart},
+			// full datetime string and no custom default location
+			{date: new DateTime('2023-01-01 00:00:00.000Z'), expected: "2023-01-01 00:00:00.000Z"},
+			// invalid location (fallback to UTC)
+			{date: new DateTime('2025-10-26 03:00:00', 'invalid'), expected: "2025-10-26 03:00:00.000Z"},
+			// CET
+			{date: new DateTime('2025-10-26 03:00:00', 'Europe/Amsterdam'), expected: "2025-10-26 02:00:00.000Z"},
+			// CEST
+			{date: new DateTime('2025-10-26 01:00:00', 'Europe/Amsterdam'), expected: "2025-10-25 23:00:00.000Z"},
+			// with timezone/offset in the date string (aka. should ignore the custom default location)
+			{date: new DateTime('2025-10-26 01:00:00 +0200', 'Asia/Tokyo'), expected: "2025-10-25 23:00:00.000Z"},
+		];
+
+		for (let i = 0; i < scenarios.length; i++) {
+			const s = scenarios[i];
+			if (!s.date.string().includes(s.expected)) {
+				throw new Error('(' + i + ') ' + s.date.string() + ' does not contain expected ' + s.expected);
+			}
 		}
 	`)
 	if err != nil {
@@ -705,7 +795,7 @@ func TestMailsBindsCount(t *testing.T) {
 	vm := goja.New()
 	mailsBinds(vm)
 
-	testBindsCount(vm, "$mails", 4, t)
+	testBindsCount(vm, "$mails", 5, t)
 }
 
 func TestMailsBinds(t *testing.T) {
@@ -741,6 +831,11 @@ func TestMailsBinds(t *testing.T) {
 
 		$mails.sendRecordOTP($app, record, "test_otp_id", "test_otp_pass");
 		if (!$app.testMailer.lastMessage().html.includes("test_otp_pass")) {
+			throw new Error("Expected record OTP email, got:" + JSON.stringify($app.testMailer.lastMessage()))
+		}
+
+		$mails.sendRecordAuthAlert($app, record, "test_alert_info");
+		if (!$app.testMailer.lastMessage().html.includes("test_alert_info")) {
 			throw new Error("Expected record OTP email, got:" + JSON.stringify($app.testMailer.lastMessage()))
 		}
 	`)
@@ -1067,44 +1162,148 @@ func TestLoadingDynamicModel(t *testing.T) {
 
 	_, err := vm.RunString(`
 		let result = new DynamicModel({
-			text:        "",
-			bool:        false,
-			number:      0,
-			select_many: [],
-			json:        [],
-			// custom map-like field
-			obj: {},
+			string:          "",
+			nullString:      nullString(),
+			nullStringEmpty: nullString(),
+
+			bool:            false,
+			nullBool:        nullBool(),
+			nullBoolEmpty:   nullBool(),
+
+			int:             0,
+			nullInt:         nullInt(),
+			nullIntEmpty:    nullInt(),
+
+			float:           -0,
+			nullFloat:       nullFloat(),
+			nullFloatEmpty:  nullFloat(),
+
+			array:           [],
+			nullArray:       nullArray(),
+			nullArrayEmpty:  nullArray(),
+
+			object:          {},
+			nullObject:      nullObject(),
+			nullObjectEmpty: nullObject(),
 		})
 
+		const expectations = {
+			"string":          "a",
+			"nullString":      "b",
+			"nullStringEmpty": null,
+
+			"bool":          false,
+			"nullBool":      true,
+			"nullBoolEmpty": null,
+
+			"int":          1,
+			"nullInt":      2,
+			"nullIntEmpty": null,
+
+			"float":          1.1,
+			"nullFloat":      1.2,
+			"nullFloatEmpty": null,
+
+			"array":          [1,2],
+			"nullArray":      [3,4],
+			"nullArrayEmpty": null,
+
+			"object":          {a:1},
+			"nullObject":      {a:2},
+			"nullObjectEmpty": null,
+		};
+
+		// constuct dummy SELECT column value literals based on the expectations
+		const selectColumns = [];
+		for (const col in expectations) {
+			const val = expectations[col]
+
+			if (val === null) {
+				selectColumns.push("null as [[" + col + "]]")
+			} else if (typeof val === "string") {
+				selectColumns.push("'" + val + "' as [[" + col + "]]")
+			} else if (typeof val === "object") {
+				selectColumns.push("'" + JSON.stringify(val) + "' as [[" + col + "]]")
+			} else {
+				selectColumns.push(val + " as [[" + col + "]]")
+			}
+		}
+
 		$app.db()
-			.select("text", "bool", "number", "select_many", "json", "('{\"test\": 1}') as obj")
-			.from("demo1")
-			.where($dbx.hashExp({"id": "84nmscqy84lsi1t"}))
-			.limit(1)
+			.newQuery("SELECT " + selectColumns.join(", "))
 			.one(result)
 
-		if (result.text != "test") {
-			throw new Error('Expected text "test", got ' + result.text);
+		for (const col in expectations) {
+			let expVal = expectations[col];
+			let resVal = result[col];
+
+			if (expVal !== null && typeof expVal === "object") {
+				expVal = JSON.stringify(expVal)
+				resVal = JSON.stringify(resVal)
+			}
+
+			if (expVal != resVal) {
+				throw new Error("Expected '" + col + "' value " + expVal + ", got " + resVal);
+			}
+		}
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDynamicModelMapFieldCaching(t *testing.T) {
+	app, _ := tests.NewTestApp()
+	defer app.Cleanup()
+
+	vm := goja.New()
+	baseBinds(vm)
+	dbxBinds(vm)
+	vm.Set("$app", app)
+
+	_, err := vm.RunString(`
+		let m1 = new DynamicModel({
+			int: 0,
+			float: -0,
+			text: "",
+			bool: false,
+			obj: {},
+			arr: [],
+		})
+
+		let m2 = new DynamicModel({
+			int: 0,
+			float: -0,
+			text: "",
+			bool: false,
+			obj: {},
+			arr: [],
+		})
+
+		m1.int = 1
+		m1.float = 1.5
+		m1.text = "a"
+		m1.bool = true
+		m1.obj.set("a", 1)
+		m1.arr.push(1)
+
+		m2.int = 2
+		m2.float = 2.5
+		m2.text = "b"
+		m2.bool = false
+		m2.obj.set("b", 1)
+		m2.arr.push(2)
+
+		let m1Expected = '{"arr":[1],"bool":true,"float":1.5,"int":1,"obj":{"a":1},"text":"a"}';
+		let m1Serialized = JSON.stringify(m1);
+		if (m1Serialized != m1Expected) {
+			throw new Error("Expected m1 \n" + m1Expected + "\ngot\n" + m1Serialized);
 		}
 
-		if (result.bool != true) {
-			throw new Error('Expected bool true, got ' + result.bool);
-		}
-
-		if (result.number != 123456) {
-			throw new Error('Expected number 123456, got ' + result.number);
-		}
-
-		if (result.select_many.length != 2 || result.select_many[0] != "optionB" || result.select_many[1] != "optionC") {
-			throw new Error('Expected select_many ["optionB", "optionC"], got ' + result.select_many);
-		}
-
-		if (result.json.length != 3 || result.json[0] != 1 || result.json[1] != 2 || result.json[2] != 3) {
-			throw new Error('Expected json [1, 2, 3], got ' + result.json);
-		}
-
-		if (result.obj.get("test") != 1) {
-			throw new Error('Expected obj.get("test") 1, got ' + JSON.stringify(result.obj));
+		let m2Expected = '{"arr":[2],"bool":false,"float":2.5,"int":2,"obj":{"b":1},"text":"b"}';
+		let m2Serialized = JSON.stringify(m2);
+		if (m2Serialized != m2Expected) {
+			throw new Error("Expected m2 \n" + m2Expected + "\ngot\n" + m2Serialized);
 		}
 	`)
 	if err != nil {
@@ -1279,6 +1478,13 @@ func TestHttpClientBindsSend(t *testing.T) {
 			headers: {"content-type": "text/plain"}, // should be ignored
 		})
 
+		// raw body response field check
+		const test4 = $http.send({
+			method: "post",
+			url:    testURL,
+			body:   'test',
+		})
+
 		const scenarios = [
 			[test0, {
 				"statusCode": "400",
@@ -1311,6 +1517,13 @@ func TestHttpClientBindsSend(t *testing.T) {
 					"multipart/form-data; boundary="
 				],
 			}],
+			[test4, {
+				"statusCode":              "200",
+				"headers.X-Custom.0":      "custom_header",
+				"cookies.sessionId.value": "123456",
+				// {"body":"test","headers":{"accept_encoding":"gzip","content_length":"4","user_agent":"Go-http-client/1.1"},"method":"POST"}
+				"body": [123,34,98,111,100,121,34,58,34,116,101,115,116,34,44,34,104,101,97,100,101,114,115,34,58,123,34,97,99,99,101,112,116,95,101,110,99,111,100,105,110,103,34,58,34,103,122,105,112,34,44,34,99,111,110,116,101,110,116,95,108,101,110,103,116,104,34,58,34,52,34,44,34,117,115,101,114,95,97,103,101,110,116,34,58,34,71,111,45,104,116,116,112,45,99,108,105,101,110,116,47,49,46,49,34,125,44,34,109,101,116,104,111,100,34,58,34,80,79,83,84,34,125],
+			}],
 		]
 
 		for (let scenario of scenarios) {
@@ -1324,13 +1537,13 @@ func TestHttpClientBindsSend(t *testing.T) {
 					// check for partial match(es)
 					for (let exp of expectation) {
 						if (!value.includes(exp)) {
-							throw new Error('Expected ' + key + ' to contain ' + exp + ', got: ' + result.raw);
+							throw new Error('Expected ' + key + ' to contain ' + exp + ', got: ' + toString(result.body));
 						}
 					}
 				} else {
 					// check for direct match
 					if (value != expectation) {
-						throw new Error('Expected ' + key + ' ' + expectation + ', got: ' + result.raw);
+						throw new Error('Expected ' + key + ' ' + expectation + ', got: ' + toString(result.body));
 					}
 				}
 			}
@@ -1354,7 +1567,7 @@ func TestCronBindsCount(t *testing.T) {
 	testBindsCount(vm, "this", 2, t)
 
 	pool.run(func(poolVM *goja.Runtime) error {
-		testBindsCount(poolVM, "this", 1, t)
+		testBindsCount(poolVM, "this", 2, t)
 		return nil
 	})
 }
@@ -1513,13 +1726,14 @@ func TestRouterBinds(t *testing.T) {
 	defer app.Cleanup()
 
 	result := &struct {
-		AddCount  int
-		WithCount int
+		RouteMiddlewareCalls  int
+		GlobalMiddlewareCalls int
 	}{}
 
 	vmFactory := func() *goja.Runtime {
 		vm := goja.New()
 		baseBinds(vm)
+		apisBinds(vm)
 		vm.Set("$app", app)
 		vm.Set("result", result)
 		return vm
@@ -1532,14 +1746,20 @@ func TestRouterBinds(t *testing.T) {
 
 	_, err := vm.RunString(`
 		routerAdd("GET", "/test", (e) => {
-			result.addCount++;
+			result.routeMiddlewareCalls++;
 		}, (e) => {
-			result.addCount++;
+			result.routeMiddlewareCalls++;
 			return e.next();
 		})
 
+		// Promise is not technically supported as return result
+		// but we try to resolve it at least for thrown errors
+		routerAdd("GET", "/error", async (e) => {
+			throw new ApiError(456, 'test', null)
+		})
+
 		routerUse((e) => {
-			result.withCount++;
+			result.globalMiddlewareCalls++;
 
 			return e.next();
 		})
@@ -1560,21 +1780,44 @@ func TestRouterBinds(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/test", nil)
-
 	mux, err := serveEvent.Router.BuildMux()
 	if err != nil {
 		t.Fatalf("Failed to build router mux: %v", err)
 	}
-	mux.ServeHTTP(rec, req)
 
-	if result.AddCount != 2 {
-		t.Fatalf("Expected AddCount %d, got %d", 2, result.AddCount)
+	scenarios := []struct {
+		method                        string
+		path                          string
+		expectedRouteMiddlewareCalls  int
+		expectedGlobalMiddlewareCalls int
+		expectedCode                  int
+	}{
+		{"GET", "/test", 2, 1, 200},
+		{"GET", "/error", 0, 1, 456},
 	}
 
-	if result.WithCount != 1 {
-		t.Fatalf("Expected WithCount %d, got %d", 1, result.WithCount)
+	for _, s := range scenarios {
+		t.Run(s.method+" "+s.path, func(t *testing.T) {
+			// reset
+			result.RouteMiddlewareCalls = 0
+			result.GlobalMiddlewareCalls = 0
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(s.method, s.path, nil)
+			mux.ServeHTTP(rec, req)
+
+			if result.RouteMiddlewareCalls != s.expectedRouteMiddlewareCalls {
+				t.Fatalf("Expected RouteMiddlewareCalls %d, got %d", s.expectedRouteMiddlewareCalls, result.RouteMiddlewareCalls)
+			}
+
+			if result.GlobalMiddlewareCalls != s.expectedGlobalMiddlewareCalls {
+				t.Fatalf("Expected GlobalMiddlewareCalls %d, got %d", s.expectedGlobalMiddlewareCalls, result.GlobalMiddlewareCalls)
+			}
+
+			if rec.Code != s.expectedCode {
+				t.Fatalf("Expected status code %d, got %d", s.expectedCode, rec.Code)
+			}
+		})
 	}
 }
 
@@ -1589,5 +1832,5 @@ func TestOsBindsCount(t *testing.T) {
 	vm := goja.New()
 	osBinds(vm)
 
-	testBindsCount(vm, "$os", 17, t)
+	testBindsCount(vm, "$os", 20, t)
 }

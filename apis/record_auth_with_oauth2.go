@@ -3,11 +3,13 @@ package apis
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
 	"net/http"
+	"strings"
 	"time"
 
 	validation "github.com/go-ozzo/ozzo-validation/v4"
@@ -33,6 +35,8 @@ func recordAuthWithOAuth2(e *core.RequestEvent) error {
 	if e.Auth != nil && e.Auth.Collection().Id == collection.Id {
 		fallbackAuthRecord = e.Auth
 	}
+
+	e.Set(core.RequestEventKeyInfoContext, core.RequestInfoContextOAuth2)
 
 	form := new(recordOAuth2LoginForm)
 	form.collection = collection
@@ -87,6 +91,19 @@ func recordAuthWithOAuth2(e *core.RequestEvent) error {
 		return firstApiError(err, e.BadRequestError("Failed to fetch OAuth2 user.", err))
 	}
 
+	// Apple currently returns the user's name only as part of the first redirect data response
+	// so we try to assign the [apis.oauth2SubscriptionRedirect] forwarded name.
+	if form.Provider == auth.NameApple && authUser.Name == "" {
+		nameKey := oauth2RedirectAppleNameStoreKeyPrefix + form.Code
+		name, ok := e.App.Store().Get(nameKey).(string)
+		if ok {
+			e.App.Store().Remove(nameKey)
+			authUser.Name = name
+		} else {
+			e.App.Logger().Debug("Missing or already removed Apple user's name")
+		}
+	}
+
 	var authRecord *core.Record
 
 	// check for existing relation with the auth collection
@@ -133,13 +150,17 @@ func recordAuthWithOAuth2(e *core.RequestEvent) error {
 			return firstApiError(err, e.BadRequestError("Failed to authenticate.", err))
 		}
 
-		meta := struct {
-			*auth.AuthUser
-			IsNew bool `json:"isNew"`
-		}{
-			AuthUser: e.OAuth2User,
-			IsNew:    e.IsNewRecord,
+		// @todo revert back to struct after removing the custom auth.AuthUser marshalization
+		meta := map[string]any{}
+		rawOAuth2User, err := json.Marshal(e.OAuth2User)
+		if err != nil {
+			return err
 		}
+		err = json.Unmarshal(rawOAuth2User, &meta)
+		if err != nil {
+			return err
+		}
+		meta["isNew"] = e.IsNewRecord
 
 		return RecordAuthResponse(e.RequestEvent, e.Record, core.MFAMethodOAuth2, meta)
 	})
@@ -194,10 +215,20 @@ func (form *recordOAuth2LoginForm) checkProviderName(value any) error {
 
 func oldCanAssignUsername(txApp core.App, collection *core.Collection, username string) bool {
 	// ensure that username is unique
-	checkUnique := dbutils.HasSingleColumnUniqueIndex(collection.OAuth2.MappedFields.Username, collection.Indexes)
-	if checkUnique {
-		if _, err := txApp.FindFirstRecordByData(collection, collection.OAuth2.MappedFields.Username, username); err == nil {
-			return false // already exist
+	index, hasUniqueue := dbutils.FindSingleColumnUniqueIndex(collection.Indexes, collection.OAuth2.MappedFields.Username)
+	if hasUniqueue {
+		var expr dbx.Expression
+		if strings.EqualFold(index.Columns[0].Collate, "nocase") {
+			// case-insensitive search
+			expr = dbx.NewExp("username = {:username} COLLATE NOCASE", dbx.Params{"username": username})
+		} else {
+			expr = dbx.HashExp{"username": username}
+		}
+
+		var exists int
+		_ = txApp.RecordQuery(collection).Select("(1)").AndWhere(expr).Limit(1).Row(&exists)
+		if exists > 0 {
+			return false
 		}
 	}
 
@@ -221,7 +252,11 @@ func oauth2Submit(e *core.RecordAuthWithOAuth2RequestEvent, optExternalAuth *cor
 				payload = map[string]any{}
 			}
 
-			payload[core.FieldNameEmail] = e.OAuth2User.Email
+			// assign the OAuth2 user email only if the user hasn't submitted one
+			// (ignore empty/invalid values for consistency with the OAuth2->existing user update flow)
+			if v, _ := payload[core.FieldNameEmail].(string); v == "" {
+				payload[core.FieldNameEmail] = e.OAuth2User.Email
+			}
 
 			// map known fields (unless the field was explicitly submitted as part of CreateData)
 			if _, ok := payload[e.Collection.OAuth2.MappedFields.Id]; !ok && e.Collection.OAuth2.MappedFields.Id != "" {

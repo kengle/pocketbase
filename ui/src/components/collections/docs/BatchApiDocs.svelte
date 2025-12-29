@@ -18,7 +18,16 @@
         responses.push({
             code: 200,
             body: JSON.stringify(
-                [dummyRecord, Object.assign({}, dummyRecord, { id: dummyRecord + "2" })],
+                [
+                    {
+                        status: 200,
+                        body: dummyRecord,
+                    },
+                    {
+                        status: 200,
+                        body: Object.assign({}, dummyRecord, { id: dummyRecord.id + "2" }),
+                    },
+                ],
                 null,
                 2,
             ),
@@ -57,7 +66,7 @@
             code: 403,
             body: `
                 {
-                  "code": 403,
+                  "status": 403,
                   "message": "Batch requests are not allowed.",
                   "data": {}
                 }
@@ -81,9 +90,12 @@
             <a href="/settings" use:link>Dashboard settings</a>.
         </p>
         <p>
-            Because this endpoint process the requests in a single transaction it could degrade the
-            performance of your application if not used with proper care and configuration (e.g. too large
-            allowed execution timeout, large body size limit, etc.).
+            Because this endpoint process the requests in a single DB transaction it could degrade the
+            performance of your application if not used with proper care and configuration
+            <em
+                >(prefer smaller max processing and body size limits, avoid large file uploads over slow S3
+                networks and custom hooks that communicate with slow external APIs)</em
+            >.
         </p>
     </div>
 </div>

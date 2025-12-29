@@ -74,7 +74,7 @@ func UnmarshalRequestData(data map[string][]string, dst any, structTagKey string
 
 		for k, v := range data {
 			if k == JSONPayloadKey {
-				continue // unmarshalled separately
+				continue // unmarshaled separately
 			}
 
 			total := len(v)
@@ -296,6 +296,10 @@ func setRegularReflectedValue(rv reflect.Value, value string) error {
 		}
 
 		rv.SetFloat(v)
+	case reflect.Interface:
+		if rv.CanSet() {
+			rv.Set(reflect.ValueOf(inferValue(value)))
+		}
 	default:
 		return errors.New("unknown value type " + rv.Kind().String())
 	}
