@@ -100,7 +100,6 @@ func recordsList(e *core.RequestEvent) error {
 		if err != nil {
 			return firstApiError(err, e.BadRequestError("", err))
 		}
-		
 
 		event := new(core.RecordsListRequestEvent)
 		event.RequestEvent = e
@@ -113,28 +112,29 @@ func recordsList(e *core.RequestEvent) error {
 				return firstApiError(err, e.InternalServerError("Failed to enrich records", err))
 			}
 
-		// Add a randomized throttle in case of too many empty search filter attempts.
-		//
-		// This is just for extra precaution since security researches raised concern regarding the possibility of eventual
-		// timing attacks because the List API rule acts also as filter and executes in a single run with the client-side filters.
-		// This is by design and it is an accepted trade off between performance, usability and correctness.
-		//
-		// While technically the below doesn't fully guarantee protection against filter timing attacks, in practice combined with the network latency it makes them even less feasible.
-		// A properly configured rate limiter or individual fields Hidden checks are better suited if you are really concerned about eventual information disclosure by side-channel attacks.
-		//
-		// In all cases it doesn't really matter that much because it doesn't affect the builtin PocketBase security sensitive fields (e.g. password and tokenKey) since they
-		// are not client-side filterable and in the few places where they need to be compared against an external value, a constant time check is used.
-		if !e.HasSuperuserAuth() &&
-			(collection.ListRule != nil && *collection.ListRule != "") &&
-			(requestInfo.Query["filter"] != "") &&
-			len(e.Records) == 0 &&
-			checkRateLimit(e.RequestEvent, "@pb_list_timing_check_"+collection.Id, listTimingRateLimitRule) != nil {
-			e.App.Logger().Debug("Randomized throttle because of too many failed searches", "collectionId", collection.Id)
-			randomizedThrottle(500)
-		}
+			// Add a randomized throttle in case of too many empty search filter attempts.
+			//
+			// This is just for extra precaution since security researches raised concern regarding the possibility of eventual
+			// timing attacks because the List API rule acts also as filter and executes in a single run with the client-side filters.
+			// This is by design and it is an accepted trade off between performance, usability and correctness.
+			//
+			// While technically the below doesn't fully guarantee protection against filter timing attacks, in practice combined with the network latency it makes them even less feasible.
+			// A properly configured rate limiter or individual fields Hidden checks are better suited if you are really concerned about eventual information disclosure by side-channel attacks.
+			//
+			// In all cases it doesn't really matter that much because it doesn't affect the builtin PocketBase security sensitive fields (e.g. password and tokenKey) since they
+			// are not client-side filterable and in the few places where they need to be compared against an external value, a constant time check is used.
+			if !e.HasSuperuserAuth() &&
+				(collection.ListRule != nil && *collection.ListRule != "") &&
+				(requestInfo.Query["filter"] != "") &&
+				len(e.Records) == 0 &&
+				checkRateLimit(e.RequestEvent, "@pb_list_timing_check_"+collection.Id, listTimingRateLimitRule) != nil {
+				e.App.Logger().Debug("Randomized throttle because of too many failed searches", "collectionId", collection.Id)
+				randomizedThrottle(500)
+			}
 
-		return execAfterSuccessTx(true, e.App, func() error {
-			return e.JSON(http.StatusOK, e.Result)
+			return execAfterSuccessTx(true, e.App, func() error {
+				return e.JSON(http.StatusOK, e.Result)
+			})
 		})
 	})
 }
