@@ -84,17 +84,12 @@ func recordsList(e *core.RequestEvent) error {
 		searchProvider.CountCol("_rowid_")
 	}
 
-	// use rowid when available to minimize the need of a covering index with the "id" field
-	if !collection.IsView() {
-		searchProvider.CountCol("_rowid_")
-	}
+	buildEvent := new(core.RecordsListQueryBuildEvent)
+	buildEvent.RequestEvent = e
+	buildEvent.Collection = collection
+	buildEvent.SearchProvider = searchProvider
 
-	sb_event := new(core.RecordsListQueryBuildEvent)
-	sb_event.RequestEvent = e
-	sb_event.Collection = collection
-	sb_event.SearchProvider = searchProvider
-
-	return e.App.OnRecordsListQueryBuild().Trigger(sb_event, func(sbe *core.RecordsListQueryBuildEvent) error {
+	return e.App.OnRecordsListQueryBuild().Trigger(buildEvent, func(sbe *core.RecordsListQueryBuildEvent) error {
 		records := []*core.Record{}
 		result, err := searchProvider.ParseAndExec(e.Request.URL.Query().Encode(), &records)
 		if err != nil {
